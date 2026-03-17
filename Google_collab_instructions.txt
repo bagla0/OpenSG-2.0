@@ -42,6 +42,7 @@ import sys
 ## Once Black terminal opened 
 # 1. Initialize Conda and activate your env
 cd /content/drive/MyDrive/OpenSG_2.0
+cd /content/drive/MyDrive/Akshat/OpenSG_2.0
 conda env create --file environment.yml
 source /usr/local/etc/profile.d/conda.sh
 conda activate opensg_2.0_env

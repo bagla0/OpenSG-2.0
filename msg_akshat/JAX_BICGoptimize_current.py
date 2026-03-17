@@ -1,4 +1,3 @@
-
 import meshio
 import numpy as np
 from helper import *
@@ -35,24 +34,30 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 start = time.time()
 #print(f"  Start Compute: {start:.4f}s")
 ############### User Input #################################
-#name='Sandwich_SC_files/RHC/RHC_refined_45'
-name='Sandwich_SC_files/BCC/1D_SG_2UC_45'
-#name='Sandwich_SC_files/RHC/SW_2UC_45' 
+n_model=2 # 1: Beam; 2: Plate; 3: 3D elastic
+
+# Test: (2D SG)
 #name='Sandwich_SC_files/RHC/RHC_Coarse_2UC_45'
-#name='Sandwich_SC_files/BCC/SW_2UC_45'
+# Test: (1D SG)
+name='Platemodel/Plate_1D_SG_2UC_45'
 
 material_param=jnp.array([(108e3,8e3,8e3,4e3,4e3,3e3,0.32,0.32,0.30),
                           (108e3,8e3,8e3,4e3,4e3,3e3,0.32,0.32,0.30),
                          (69e3, 69e3, 69e3, 26.54e3, 26.54e3, 26.54e3, 0.30, 0.30, 0.30)])
 
 angles = jnp.array([45, -45, 0.0]) # Put 0.0 if no angle used
-#print('JAX initial', time.time()- start)
 #####################################################
 
-num_sg=generate_msh_from_sc(name+'.sc', 'sgmesh.msh')
-#num_sg=3
+n_sg=generate_msh_from_sc(name+'.sc', 'sgmesh.msh')
+
+model_map = {
+    1: "Beam",
+    2: "Plate",
+    3: "3D elastic"
+}
+print('n_model:    ', model_map.get(n_model, 1))
 mesh = meshio.read('sgmesh.msh') 
-points = jnp.array(mesh.points, dtype=np.float32)[:,0:num_sg]
+points = jnp.array(mesh.points, dtype=np.float32)[:,0:n_sg]
 cells = jnp.array(mesh.cells[0].data, dtype=np.uint64) 
 
 meshio_type = mesh.cells[0].type 
@@ -71,16 +76,26 @@ cell_type_map = {
     
     # 3D Elements
     "tetra": CellType.tetrahedron,
-    "hexahedron": CellType.hexahedron
+    "hexahedron": CellType.hexahedron,
+    "tetra10":CellType.tetrahedron
 }
+basis_degree_map = {
+    "line3": 2,
+    "line4": 3,
+    "line5": 4,
+    "tetra10": 2,
+}
+b_degree = basis_degree_map.get(meshio_type, 1)
+q_degree = 6 if b_degree > 1 else 3
+
 # For line 5 , change basis degree=4
 fe_type = FiniteElementType(
     cell_type=cell_type_map.get(meshio_type),
     family=ElementFamily.P,
-    basis_degree=4,
+    basis_degree=b_degree,
     lagrange_variant=LagrangeVariant.equispaced,
     quadrature_type=QuadratureType.default,
-    quadrature_degree=6,
+    quadrature_degree=q_degree,
 )
 
 def build_single_C_matrix(params):
@@ -145,14 +160,14 @@ def get_heterogeneous_C_matrix(cell_domain_ids, num_quad_points, material_param,
     
     return C_matrices_rotated[cell_domain_ids]
 
+
+# In[20]:
+
+
 @jax.jit    
 def _element_residual_single_case(
-    u_nd: jnp.ndarray,
-    x_nd: jnp.ndarray,
-    dphi_dxi_qnp: jnp.ndarray,
-    phi_qn: jnp.ndarray,
-    W_q: jnp.ndarray,
-    C_ss: jnp.ndarray,
+    u_nd: jnp.ndarray, x_nd: jnp.ndarray, dphi_dxi_qnp: jnp.ndarray, phi_qn: jnp.ndarray,
+    W_q: jnp.ndarray, C_ss: jnp.ndarray, 
     epsilon_bar: jnp.ndarray = jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 ):
     J_qdp = jnp.einsum("nd,qnp->qdp", x_nd, dphi_dxi_qnp)
@@ -166,17 +181,11 @@ def _element_residual_single_case(
         dphi_dx_3D = jnp.stack([zeros, zeros, dphi_dx_qnd[..., 0]], axis=-1)
     elif x_nd.shape[1]==2: # 2D SG
         dphi_dx_3D = jnp.stack([zeros, dphi_dx_qnd[..., 0], dphi_dx_qnd[..., 1]], axis=-1)
-    elif x_nd.shape[1]==3: # 3D SG
+    else:
         dphi_dx_3D = dphi_dx_qnd
-
-    dx = dphi_dx_3D[..., 0]
-    dy = dphi_dx_3D[..., 1]
-    dz = dphi_dx_3D[..., 2]
-    
+    dx, dy, dz = dphi_dx_3D[..., 0], dphi_dx_3D[..., 1], dphi_dx_3D[..., 2]
     u_x, u_y, u_z = u_nd[:, 0], u_nd[:, 1], u_nd[:, 2]
-    eps_xx = dx @ u_x
-    eps_yy = dy @ u_y
-    eps_zz = dz @ u_z
+    eps_xx, eps_yy, eps_zz = dx @ u_x, dy @ u_y, dz @ u_z
     eps_yz = (dy @ u_z) + (dz @ u_y)
     eps_xz = (dx @ u_z) + (dz @ u_x)
     eps_xy = (dx @ u_y) + (dy @ u_x)
@@ -187,12 +196,9 @@ def _element_residual_single_case(
     R_x = jnp.sum(stress[:, 0, None] * dx + stress[:, 5, None] * dy + stress[:, 4, None] * dz, axis=0)
     R_y = jnp.sum(stress[:, 5, None] * dx + stress[:, 1, None] * dy + stress[:, 3, None] * dz, axis=0)
     R_z = jnp.sum(stress[:, 4, None] * dx + stress[:, 3, None] * dy + stress[:, 2, None] * dz, axis=0)
-
-    R_nd = jnp.stack([R_x, R_y, R_z], axis=-1)
-
-    return R_nd
-
-@jax.jit
+    return jnp.stack([R_x, R_y, R_z], axis=-1)
+    
+@jax.jit(static_argnames=['n_model', 'n_sg'])
 def calculate_residual_batch_element_kernel_mixed_periodic(
     x_end: jnp.ndarray,
     dphi_dxi_qnp: jnp.ndarray,
@@ -201,27 +207,121 @@ def calculate_residual_batch_element_kernel_mixed_periodic(
     C_ess: jnp.ndarray,
     periodic_cells, 
     unique_dofs_full: jnp.ndarray, 
-    u_g_flat: jnp.ndarray,   
+    u_g_flat: jnp.ndarray,  
+    n_model: int, 
+    n_sg: int
 ):
-    
+    # ==========================================
+    # 1. Compute Omega (Macroscopic Scaling)
+    # ==========================================
+    if n_model == 3:
+        def _get_vol(x_nd):
+            J_qdp = jnp.einsum("nd,qnp->qdp", x_nd, dphi_dxi_qnp)
+            return jnp.sum(jnp.linalg.det(J_qdp) * W_q)
+
+        elem_vols = jax.vmap(_get_vol)(x_end)
+        omega = jnp.sum(elem_vols)
+
+    elif n_model == 2:
+        if n_sg == 3:
+            omega = jnp.ptp(x_end[..., 0]) * jnp.ptp(x_end[..., 1])
+        elif n_sg == 2:
+            omega = jnp.ptp(x_end[..., 0])
+        else:
+            omega = 1.0
+            
+    elif n_model == 1:
+        if n_sg ==3:
+            omega = jnp.ptp(x_end[..., 0])
+        else:
+            omega = 1.0
+    else:
+        omega = 1.0
+    # ==========================================
+    # 2. Pre-define Masks for Ge
+    # ==========================================    
+    if n_model == 1:
+            mask_ones_1d = jnp.zeros((6, 4)).at[0, 0].set(1.0)
+            mask_y2 = jnp.zeros((6, 4)).at[0, 3].set(-1.0).at[4, 1].set(1.0)
+            mask_y3_1d = jnp.zeros((6, 4)).at[0, 2].set(1.0).at[5, 1].set(-1.0)
+    elif n_model == 2:
+            mask_ones_2d = jnp.zeros((6, 6)).at[0,0].set(1.0).at[1,1].set(1.0).at[5,2].set(1.0)
+            mask_y3_2d   = jnp.zeros((6, 6)).at[0,3].set(1.0).at[1,4].set(1.0).at[5,5].set(1.0)
+
     u_end = transform_global_unraveled_to_element_node(periodic_cells, u_g_flat, U=3)
+    # ==========================================
+    # 3. Element Processing Logic
+    # ==========================================
     def element_process_all_cases(u_nd, x_nd, C_ss):
-        run_6_cases = jax.vmap( # Inner VMAP: Iterate over the 6 unit strain vectors 
-            _element_residual_single_case, 
-            in_axes=(None, None, None, None, None, None, 1)
-        )
-        R_6_nodes_3 = run_6_cases(
-            u_nd, x_nd, dphi_dxi_qnp, phi_qn, W_q, C_ss, jnp.eye(6)
-        )
-        return R_6_nodes_3
+        J_qdp = jnp.einsum("nd,qnp->qdp", x_nd, dphi_dxi_qnp)
         
-    batch_processor = jax.vmap(  # 3. Outer VMAP: Iterate over the batch of elements
-        element_process_all_cases, 
-        in_axes=(0, 0, 0)
-    )
+        if n_sg > 1:  # Covers n_sg == 2 and n_sg == 3
+            detJ_q = jnp.abs(jnp.linalg.det(J_qdp))
+        else:         # Covers n_sg == 1
+            detJ_q = jnp.abs(J_qdp[..., 0, 0])
+
+        # Spatial coordinates at quadrature points
+        dV_q = detJ_q * W_q
+        x_q = jnp.dot(phi_qn, x_nd) 
+        
+        # 2. Construct Ge based on the macroscopic model
+        if n_model == 3:
+            Ge = jnp.eye(6)
+            # Einsum DOES NOT have 'q' on Ge since Ge is constant
+            D_elem = jnp.einsum('ji,jk,kl,q->il', Ge, C_ss, Ge, dV_q)
+            
+            # Map over axis 1 (columns of the 6x6 matrix)
+            run_cases = jax.vmap( 
+                _element_residual_single_case, 
+                in_axes=(None, None, None, None, None, None, 1) 
+            )
+            R_nodes = run_cases(u_nd, x_nd, dphi_dxi_qnp, phi_qn, W_q, C_ss, Ge)
+            
+        elif n_model == 2:
+            # 2D Plate/Shell
+            y3_q = x_q[:, n_sg-1]
+            Ge = mask_ones_2d[None, :, :] + mask_y3_2d[None, :, :] * y3_q[:, None, None]
+            
+            # Einsum HAS 'q' on Ge
+            D_elem = jnp.einsum('qji,jk,qkl,q->il', Ge, C_ss, Ge, dV_q)
+            
+            # Map over axis 2 (cases dimension)
+            run_cases = jax.vmap( 
+                _element_residual_single_case, 
+                in_axes=(None, None, None, None, None, None, 2) 
+            )
+            R_nodes = run_cases(u_nd, x_nd, dphi_dxi_qnp, phi_qn, W_q, C_ss, Ge)
+            
+        elif n_model == 1:
+            # 1D Beam
+            y3_q = x_q[:, n_sg-1]
+            y2_q = jnp.zeros_like(x_q[:, 0]) if n_sg == 1 else x_q[:, n_sg-2]
+            Ge = (
+                mask_ones_1d[None, :, :] + 
+                mask_y2[None, :, :] * y2_q[:, None, None] + 
+                mask_y3_1d[None, :, :] * y3_q[:, None, None]
+            )
+
+            # Einsum HAS 'q' on Ge
+            D_elem = jnp.einsum('qji,jk,qkl,q->il', Ge, C_ss, Ge, dV_q)
+            
+            # Map over axis 2 (cases dimension)
+            run_cases = jax.vmap( 
+                _element_residual_single_case, 
+                in_axes=(None, None, None, None, None, None, 2) 
+            )
+            R_nodes = run_cases(u_nd, x_nd, dphi_dxi_qnp, phi_qn, W_q, C_ss, Ge)
+
+        return R_nodes, D_elem
+        
+    # Outer VMAP: Iterate over the batch of elements
+    batch_processor = jax.vmap(element_process_all_cases, in_axes=(0, 0, 0))
     
-    R_end_cases = batch_processor(u_end, x_end, C_ess) # (E,6,N,3)
+    # R_end_cases shape: (E, num_cases, N, 3) where num_cases is 6 or 4
+    R_end_cases, D_elem_batch = batch_processor(u_end, x_end, C_ess) 
+    D_bar = jnp.sum(D_elem_batch, axis=0)
     R_cases_first = jnp.transpose(R_end_cases, (1, 0, 2, 3))
+
     def assemble_one_case(R_one_case_EN3):  #
         return transform_element_node_to_global_unraveled_sum(#(GlobalNDOF_unraveled, 3) 
             periodic_cells=periodic_cells, 
@@ -229,27 +329,21 @@ def calculate_residual_batch_element_kernel_mixed_periodic(
             num_nodes=u_g_flat.shape[0]//3,
         )
     R_global_cases = jax.vmap(assemble_one_case)(R_cases_first)
-    R_elastic_matrix = R_global_cases.reshape(6, -1).T
+    num_cases = num_cases = R_global_cases.shape[0]
+    R_elastic_matrix = R_global_cases.reshape(num_cases, -1).T
     R_elastic_matrix = R_elastic_matrix.at[0:3, :].set(0.0)
+    return -R_elastic_matrix, D_bar, omega
 
-    return R_elastic_matrix
 
 @jax.jit
 def _calculate_jacobian_batch_element_kernel_periodic(
-    x_end: jnp.ndarray,
-    u_f,
-    dphi_dxi_qnp: jnp.ndarray,
-    phi_qn: jnp.ndarray,          
-    W_q: jnp.ndarray,
-    C_ess: jnp.ndarray,
-    periodic_cells: object,
+    x_end: jnp.ndarray, u_f, dphi_dxi_qnp: jnp.ndarray, phi_qn: jnp.ndarray, 
+    W_q: jnp.ndarray, C_ess: jnp.ndarray, periodic_cells: object,
 ):
     E = x_end.shape[0]
     u_enu = transform_global_unraveled_to_element_node(periodic_cells, u_f)
 
-    N = x_end.shape[1]
-    D = x_end.shape[2]
-    U = u_enu.shape[2]
+    N, D, U = x_end.shape[1], x_end.shape[2], u_enu.shape[2]
     u_et = u_enu.reshape(E, N * U)
     
     @jax.jit
@@ -264,7 +358,6 @@ def _calculate_jacobian_batch_element_kernel_periodic(
     J_uu = jax.vmap(jax.jacfwd(residual_kernel, argnums=0))(
         u_et, x_end, C_ess
     )
-
     return J_uu
 
 def ebe_jacobian_product_periodic(
@@ -380,53 +473,40 @@ def apply_chebyshev_precond(inv_blocks, n_unique_u, eig_max, eig_min, A_op, degr
 def compute_effective_properties(
     delta_u_matrix: jnp.ndarray,
     R_f_reduced: jnp.ndarray,
-    x_end: jnp.ndarray,        
-    dphi_dxi_qnp: jnp.ndarray, 
-    W_q: jnp.ndarray,          
-    C_ess: jnp.ndarray         
+    D_bar: jnp.ndarray, 
+    omega,
+    n_model: int,    
+    n_sg: int,     
 ):
-    # 1. Compute D1 instantly
     D1 = jnp.einsum('ni,nj->ij', delta_u_matrix, R_f_reduced)
-
-    # 2. Extract volumes (vmap over elements)
-    def _get_vol(x_nd):
-        J_qdp = jnp.einsum("nd,qnp->qdp", x_nd, dphi_dxi_qnp)
-        return jnp.sum(jnp.linalg.det(J_qdp) * W_q)
-    
-    elem_vols = jax.vmap(_get_vol)(x_end)
-    omega = jnp.sum(elem_vols)
-
-    # 3. Compute D_bar with ZERO memory bloat
-    # Multiplies (E, 6, 6) by (E,) and sums across elements instantly
-    D_bar = jnp.einsum('eij,e->ij', C_ess, elem_vols)
 
     # 4. Effective Stiffness
     C_eff = (D_bar + D1) / omega
 
     # 5. Invert for Compliance (jnp.linalg.inv is fine for 6x6)
-    I = jnp.eye(6, dtype=C_eff.dtype)
-    Com = jnp.linalg.solve(C_eff, I)
+  #  I = jnp.eye(6, dtype=C_eff.dtype)
+   # Com = jnp.linalg.solve(C_eff, I)
   
     # 6. Extract Engineering Constants on the GPU
-    E1, E2, E3 = 1/Com[0,0], 1/Com[1,1], 1/Com[2,2]
-    v12, v13, v23 = -Com[0,1]/Com[0,0], -Com[0,2]/Com[0,0], -Com[1,2]/Com[1,1]
-    G23, G13, G12 = 1/Com[3,3], 1/Com[4,4], 1/Com[5,5]
+  #  E1, E2, E3 = 1/Com[0,0], 1/Com[1,1], 1/Com[2,2]
+  #  v12, v13, v23 = -Com[0,1]/Com[0,0], -Com[0,2]/Com[0,0], -Com[1,2]/Com[1,1]
+  #  G23, G13, G12 = 1/Com[3,3], 1/Com[4,4], 1/Com[5,5]
 
-    return C_eff, jnp.array([E1, E2, E3, G12, G13, G23,v12, v13, v23])
+    return C_eff, D1, D_bar, omega #, jnp.array([E1, E2, E3, G12, G13, G23,v12, v13, v23]), D1
 
 #########################################################################
-@partial(jax.jit, static_argnames=['n_unique'])
+@partial(jax.jit, static_argnames=['n_unique', 'n_model', 'n_sg'])
 def full_homogenization_pipeline(
     x_end, u_0_g, dphi_dxi_qnp, phi_qn, W_q, 
-    periodic_cells, unique_dofs, n_unique
+    periodic_cells, unique_dofs, n_unique, n_model, n_sg
 ):
     C_ess = get_heterogeneous_C_matrix(cell_domain_ids, num_quad_points=Q, 
     material_param=material_param, domain_angles=angles
     )
 
-    Dhe = -calculate_residual_batch_element_kernel_mixed_periodic(
+    Dhe, D_bar, omega = calculate_residual_batch_element_kernel_mixed_periodic(
         x_end, dphi_dxi_qnp, phi_qn, W_q, C_ess, periodic_cells, 
-        unique_dofs, u_0_g_full[unique_dofs]
+        unique_dofs, u_0_g_full[unique_dofs], n_model, n_sg
     )
 
     J_uu = _calculate_jacobian_batch_element_kernel_periodic(
@@ -464,21 +544,26 @@ def full_homogenization_pipeline(
             A_op,           # arg 
             4           
         )
-        res, _ = jax.scipy.sparse.linalg.cg(A_op, b_col,M=cheb_M, tol=1e-8, atol=1e-8,
-        maxiter=2000)
+        res, _ = jax.scipy.sparse.linalg.cg(A_op, b_col,M=cheb_M, tol=1e-4)
         return res
 
-    delta_u_matrix = jax.lax.map(solve_inner, Dhe.T).T
+    V0_matrix = jax.lax.map(solve_inner, Dhe.T).T
+    D1 = jnp.einsum('ni,nj->ij', V0_matrix, -Dhe)
 
-    D_eff, constants = compute_effective_properties(
-        delta_u_matrix, -Dhe, x_end, dphi_dxi_qnp, W_q, C_ess
-    )
-   # N_nodes = n_unique // 3
-   # delta_u_3d = delta_u_matrix.reshape(N_nodes, 3, 6)
-   # mean_u = jnp.mean(delta_u_3d, axis=0, keepdims=True)
-   # delta_u_zero_mean = (delta_u_3d - mean_u).reshape(n_unique, 6)
-    print(f"  D_eff process: {time.time()-start:.4f}s")
-    return D_eff, constants
+    # C_eff, D1, D_bar, omega= compute_effective_properties(
+    #     V0_matrix, -Dhe, omega,  D_bar, n_model, n_sg
+    # )
+    C_eff = (D_bar + D1) / omega
+    # 5. Invert for Compliance (jnp.linalg.inv is fine for 6x6)
+    #  I = jnp.eye(6, dtype=C_eff.dtype)
+    # Com = jnp.linalg.solve(C_eff, I)
+    
+    # 6. Extract Engineering Constants on the GPU
+    #  E1, E2, E3 = 1/Com[0,0], 1/Com[1,1], 1/Com[2,2]
+    #  v12, v13, v23 = -Com[0,1]/Com[0,0], -Com[0,2]/Com[0,0], -Com[1,2]/Com[1,1]
+    #  G23, G13, G12 = 1/Com[3,3], 1/Com[4,4], 1/Com[5,5]
+    print(f"  GPU processing starts ...: {time.time()-start:.4f}s")
+    return C_eff
 
 ##########################################################################
 
@@ -490,27 +575,24 @@ U=3 # num of solution components
 x_end = mesh_to_jax(vertices=points, cells=cells)
 
 E = x_end.shape[0] # num elements
-print(f"  Quadrature i/p: {time.time()-start:.4f}s")    
+#print(f"  Quadrature i/p: {time.time()-start:.4f}s")    
 
 # Periodic assembly map input
 
-periodic_cells, dof_map_np = mesh_to_periodic_sparse_assembly_map(V, cells, points,tol=1e-6)
+periodic_cells, dof_map_np = mesh_to_periodic_sparse_assembly_map(V, cells, points, n_model, atol=1e-6)
 unique_dofs = jnp.unique(dof_map_np)
 n_unique=len(unique_dofs)
 u_0_g_full = jnp.zeros(shape=(V * U)) 
-
-C_eff, props = full_homogenization_pipeline(
+C_eff= full_homogenization_pipeline(
     x_end, u_0_g_full, dphi_dxi_qnp, phi_qn, W_q,  
-    periodic_cells, unique_dofs, n_unique
+    periodic_cells, unique_dofs, n_unique, n_model, n_sg
 )    
 ########################################################################
+#labels = ["E1", "E2", "E3", "G12", "G13", "G23", "v12", "v13", "v23"];
+#print("--- Effective Material Properties ---")
+#for label, val in zip(labels, props):
+#    print(f"{label}: {val}")
 
-labels = ["E1", "E2", "E3", "G12", "G13", "G23", "v12", "v13", "v23"];
-print("--- Effective Material Properties ---")
-for label, val in zip(labels, props):
-    print(f"{label}: {val}")
 print('\n Effective Stiffness matrix \n')
 print(C_eff)
 print(f" \n Total Time taken: {time.time()-start:.4f}s")  
-
-

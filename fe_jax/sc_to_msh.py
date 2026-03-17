@@ -24,7 +24,7 @@ def generate_msh_from_sc(input_filepath, output_filepath):
     # 3. Slice the lists for nodes, elements, and materials
     node_lines = lines[meta_idx + 1 : meta_idx + 1 + n_nodes]
     elem_lines = lines[meta_idx + 1 + n_nodes : meta_idx + 1 + n_nodes + n_elems]
-
+    
     # 4. Write the .msh file and track cell types
     cell_types_found = set()
     
@@ -72,10 +72,18 @@ def generate_msh_from_sc(input_filepath, output_filepath):
                 connectivity = [n for n in parts[2:] if n != '0']
                 num_nodes = len(connectivity)
                 
-                if num_nodes == 2: elem_type = 1
-                elif num_nodes == 3: elem_type = 8
-                elif num_nodes == 4: elem_type = 26
-                elif num_nodes == 5: elem_type = 27  # Correctly maps to 27
+                if num_nodes == 2: 
+                    elem_type = 1
+                    cell_types_found.add("2-Node Interval")
+                elif num_nodes == 3: 
+                    elem_type = 8
+                    cell_types_found.add("3-Node Interval")
+                elif num_nodes == 4: 
+                    elem_type = 26
+                    cell_types_found.add("4-Node Interval")
+                elif num_nodes == 5: 
+                    elem_type = 27  # Correctly maps to 27
+                    cell_types_found.add("5-Node Interval")
                 else: elem_type = 1 
                     
                 f.write(f"{elem_id} {elem_type} 2 {mat_id} {mat_id} {' '.join(connectivity)}\n")
@@ -85,15 +93,20 @@ def generate_msh_from_sc(input_filepath, output_filepath):
                 parts = line.split()
                 elem_id, mat_id = parts[0], parts[1]
                 
+                # Filter out trailing zeros used for padding degenerated elements
                 connectivity = [n for n in parts[2:] if n != '0']
                 num_nodes = len(connectivity)
                 
-                # Check 2D types first, then catch 1D boundary edges
-                if num_nodes == 3: elem_type = 2
-                elif num_nodes == 4: elem_type = 3
-                elif num_nodes == 5: elem_type = 27  # <-- FIX: Catches 1D 4th-order edges in 2D mesh
-                elif num_nodes == 2: elem_type = 1   # <-- FIX: Catches 1D linear edges in 2D mesh
-                else: elem_type = 2 
+                # Only Triangles and Quadrilaterals allowed in 2D
+                if num_nodes == 3:
+                    elem_type = 2
+                    cell_types_found.add("3-Node Triangle")
+                elif num_nodes == 4:
+                    elem_type = 3
+                    cell_types_found.add("4-Node Quadrilateral")
+                else:
+                    elem_type = 2 # Default fallback
+                    cell_types_found.add(f"Unknown 2D Type ({num_nodes} nodes)")
                     
                 f.write(f"{elem_id} {elem_type} 2 {mat_id} {mat_id} {' '.join(connectivity)}\n")
 
@@ -102,17 +115,25 @@ def generate_msh_from_sc(input_filepath, output_filepath):
                 parts = line.split()
                 elem_id, mat_id = parts[0], parts[1]
                 
-                connectivity = [n for n in parts[2:] if n != '0']
-                num_nodes = len(connectivity)
+                # Get the raw list of nodes before filtering anything
+                raw_connectivity = parts[2:]
                 
-                # Check 3D types first, then catch lower-dimensional boundary elements
-                if num_nodes == 4: elem_type = 4
-                elif num_nodes == 10: elem_type = 11
-                elif num_nodes == 5: elem_type = 27  # <-- FIX: Catches 1D 4th-order edges in 3D mesh
-                # Note: 5 nodes in 3D could technically also be a Pyramid (Type 7). 
-                # If you use pyramids, you'll need logic to differentiate them from 4th-order lines.
-                else: elem_type = 4 
+                # Check the .sc convention: If the 5th node (index 4) is '0', it's a Tetra
+                # We use len() >= 5 to prevent index errors on shorter lines
+                is_tetra_deg2 = raw_connectivity[5] != '0'
+                
+                if is_tetra_deg2:
+                    connectivity = raw_connectivity[:4] + raw_connectivity[6:12]
+                    elem_type = 11
+                    cell_types_found.add("10-Node Tetrahedron")  
                     
+                else:
+                    elem_type = 4
+                    connectivity = raw_connectivity[:4]
+                    cell_types_found.add("4-Node Tetrahedron")
+
+
+               
                 f.write(f"{elem_id} {elem_type} 2 {mat_id} {mat_id} {' '.join(connectivity)}\n")
                 
         f.write("$EndElements\n")
