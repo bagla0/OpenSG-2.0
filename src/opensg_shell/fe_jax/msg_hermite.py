@@ -304,12 +304,12 @@ def solve_tw_from_yaml(yaml_path, reference="OML", frac=None):
     """
     import numpy as _np
     import jax.numpy as _jnp
-    import pypardiso
     from .msg_mesh import (load_yaml, read_mesh, mesh_curvature,
                            offset_oml_to_iml, element_e3_from_yaml)
     from .msg_materials import compute_ABD_matrix, shift_abd_reference
     from .msg_solver import (gauss_legendre_01, compute_element_geometry,
-        solve_fluctuation_field, prepare_v1_rhs, finalize_v1_and_compute_deff)
+        solve_fluctuation_field, prepare_v1_rhs, finalize_v1_and_compute_deff,
+        sparse_solve)
 
     nodes_3d, elements, material_db, layup_db, elem_to_layup = load_yaml(yaml_path)
     # reference-surface offset fraction of the laminate thickness (inward from
@@ -371,7 +371,7 @@ def solve_tw_from_yaml(yaml_path, reference="OML", frac=None):
     bb, DhlV0, DhlTV0Dle, V0DllV0 = prepare_v1_rhs(
         V0, Dhl, Dll, _jnp.array(Dle.todense()), Psi, Dc)
     R_v1 = _np.concatenate([_np.array(bb), _np.zeros((4, bb.shape[1]))], axis=0)
-    V_aug = pypardiso.spsolve(A_aug, R_v1)
+    V_aug = sparse_solve(A_aug, R_v1)
     C6, _Btim, _Ctim, V1 = finalize_v1_and_compute_deff(
         _jnp.array(V_aug[:n_primal, :]), V0, Ceff, V0DllV0, DhlV0, DhlTV0Dle, Psi, Dc)
     C6.block_until_ready()

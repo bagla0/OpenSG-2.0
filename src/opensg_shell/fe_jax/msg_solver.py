@@ -3,13 +3,23 @@ Shared FEM infrastructure for the MSG thin-walled (TW) Timoshenko solve:
 Gauss quadrature, element geometry, the KKT fluctuation solve, and the
 Timoshenko V1 / 6x6 assembly.  Element-agnostic — used by the Hermite C1
 pipeline (``msg_hermite``).  The KKT system is solved with pypardiso
-(Intel MKL PARDISO).
+(Intel MKL PARDISO) when available, otherwise SciPy SuperLU.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.sparse import csr_matrix
-import pypardiso
+
+try:
+    from pypardiso import spsolve as sparse_solve
+    SPARSE_SOLVER = "pypardiso"
+except ImportError:
+    from scipy.sparse.linalg import spsolve as sparse_solve
+    SPARSE_SOLVER = "scipy SuperLU"
+    print(
+        "NOTE: pypardiso is unavailable; OpenSG shell solves will use "
+        "scipy SuperLU. This may be slower and use more memory."
+    )
 
 jax.config.update('jax_default_matmul_precision', 'highest')
 jax.config.update("jax_enable_x64", True)
@@ -90,7 +100,7 @@ def solve_fluctuation_field(Dhh_sparse, RHS_dense, Dc_matrix):
     R_aug = np.vstack([R, np.zeros((n_con, n_cases))])
     if len(emp):
         R_aug[emp] = 0.0
-    V_aug = pypardiso.spsolve(A_aug, R_aug)
+    V_aug = sparse_solve(A_aug, R_aug)
 
     V0 = V_aug[:N, :]
     D1 = -(V0.T @ R)
