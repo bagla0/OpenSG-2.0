@@ -1003,9 +1003,9 @@ def ring_general(rx, rcells, rsub, re3, D_by, G_by, k22_edge, ax, cross, h=None,
     from scipy.sparse import coo_matrix
     import jax.numpy as jnp
     from .fe_jax.msg_solver import (solve_fluctuation_field,
-                                              prepare_v1_rhs, finalize_v1_and_compute_deff)
+                                    prepare_v1_rhs, finalize_v1_and_compute_deff,
+                                    sparse_solve)
     from .fe_jax.msg_rm_timo import build_C_Psi
-    import pypardiso
     m = len(rx)
     if h is None:                                       # strip depth ~ hoop spacing
         h = float(np.mean(np.linalg.norm(rx[rcells[:, 1]] - rx[rcells[:, 0]], axis=1)))
@@ -1032,7 +1032,7 @@ def ring_general(rx, rcells, rsub, re3, D_by, G_by, k22_edge, ax, cross, h=None,
         jnp.array(Psi), jnp.array(Dc))
     n = Dhh.shape[0]
     R_v1 = np.concatenate([np.asarray(bb), np.zeros((4, np.asarray(bb).shape[1]))], axis=0)
-    V_aug = pypardiso.spsolve(A_aug, R_v1)
+    V_aug = sparse_solve(A_aug, R_v1)
     C6, *_ = finalize_v1_and_compute_deff(
         jnp.array(V_aug[:n, :]), jnp.array(V0), jnp.array(Deff),
         V0DllV0, DhlV0, DhlTV0Dle, jnp.array(Psi), jnp.array(Dc))

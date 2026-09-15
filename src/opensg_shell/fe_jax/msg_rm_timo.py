@@ -16,7 +16,7 @@ from scipy.sparse import coo_matrix
 import jax; jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from .msg_solver import (solve_fluctuation_field, prepare_v1_rhs,
-                               finalize_v1_and_compute_deff)
+                         finalize_v1_and_compute_deff, sparse_solve)
 from .msg_rm import _lagrange, _shape, _macro_BD, _macro_BG
 
 
@@ -184,8 +184,7 @@ def timoshenko_rm(nodes, elems, layup_per_elem, D_by, G_by, k22_e, p=1, reduced=
         jnp.array(Psi), jnp.array(Dc))
     n = Dhh.shape[0]
     R_v1 = np.concatenate([np.array(bb), np.zeros((4, bb.shape[1]))], axis=0)
-    import pypardiso
-    V_aug = pypardiso.spsolve(A_aug, R_v1)
+    V_aug = sparse_solve(A_aug, R_v1)
     C6, *_ = finalize_v1_and_compute_deff(
         jnp.array(V_aug[:n, :]), jnp.array(V0), jnp.array(Deff),
         V0DllV0, DhlV0, DhlTV0Dle, jnp.array(Psi), jnp.array(Dc))

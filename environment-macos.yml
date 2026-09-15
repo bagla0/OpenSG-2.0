@@ -1,0 +1,29 @@
+name: opensg_2_0_mac
+
+channels:
+  - conda-forge
+
+dependencies:
+  # Native Apple Silicon / CPU environment. CUDA, CuPy, Intel MKL
+  # PARDISO, and PETSc are intentionally omitted.
+  - python=3.13
+  - numpy
+  - scipy
+  - pyyaml
+  - matplotlib
+  - fenics-basix=0.8.0
+  - meshio
+  - mpi4py
+  - mpich
+  - numba
+  - psutil
+  - pytest
+  - pip
+
+  - pip:
+      # Plain JAX installs the CPU backend supported on macOS.
+      - jax
+      - jaxopt
+      - flax
+      - pyamg
+      - libigl
